@@ -1,0 +1,8 @@
+누적 수익률 (%),-1.33
+MDD (%),-19.07
+Sharpe Ratio,-0.4031
+최종 자산 (원),98670235.0
+총 거래 수,216
+승률 (%),57.4
+평균 거래 수익 (%),0.47
+청산 사유 분포,"{'secretary_trigger': 110, 'stop_loss': 65, 'force_liquidate': 40, 'take_profit': 1}"
