@@ -107,7 +107,7 @@ class Backtester:
 
         # GA 가중치 → 투입 자본
         weight       = self.ga_weights.get(ticker, 0)
-        alloc_capital= self.cfg.initial_capital * weight
+        alloc_capital= self._portfolio_value(date) * weight
         alloc_capital= min(alloc_capital, self.cash * 0.95)   # 현금 5% 여유
 
         if alloc_capital < price:   # 1주도 못 사면 패스
@@ -406,7 +406,9 @@ if __name__ == "__main__":
 
     cfg = BacktestConfig(initial_capital=100_000_000)
     bt  = Backtester(store, ga_weights, cfg, verbose=True)
+    '''version 1.0
     result = bt.run("2018-01-02", "2025-06-30")
-    
+    '''
+    result = bt.run("2023-01-02", "2025-06-30")   # GA test 이후 구간만
     print_report(result)
     save_backtest(result, "full")

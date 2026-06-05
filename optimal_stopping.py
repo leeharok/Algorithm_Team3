@@ -1,4 +1,4 @@
-"""
+"""version1.0
 Secretary Problem을 20일 보유 윈도우에 적용.
 
 윈도우 구조:
@@ -9,6 +9,16 @@ Secretary Problem을 20일 보유 윈도우에 적용.
 오버라이드 규칙 (전체 보유 기간 내내 유효):
   Stop-Loss   : 수익률 <= -8%  → 즉시 청산
   Take-Profit : 수익률 >= +25% → 즉시 청산
+
+변경-> window=60, observe=22, stop=-12%, take=+20%, force_liquidate 제거
+P* 넘는 순간 팔지 말고 P* × 1.15 (P*보다 15% 더 올랐을 때) 팔기
+1~22일: P* 확정 (10,800원)
+23~60일: 기준 = P* × 1.15 못 넘으면
+
+61일~: 기준 = P* × 1.10  (15% → 10%, 5% 감소)
+121일~: 기준 = P* × 1.05  (10% → 5%, 5% 감소)
+181일~: 기준 = P* × 1.00  (5% → 0%, 최소값 고정)
+241일~: 기준 = P* × 1.00  (1.0 이하로 안 내려감)
 """
 
 import warnings
@@ -22,17 +32,17 @@ import os
 
 ExitReason = Literal[
     "secretary_trigger",   # P* 초과 → Secretary 조건 충족
-    "force_liquidate",     # Day 20 강제 청산
-    "stop_loss",           # -8% 손절
-    "take_profit",         # +25% 익절
+    "force_liquidate",     # Day 60 강제 청산
+    "stop_loss",           # -12% 손절
+    "take_profit",         # +20% 익절
 ]
 
 @dataclass
 class StoppingConfig:
-    window       : int   = 20      # 전체 보유 윈도우 (거래일)
-    observe_days : int   = 7       # 관찰 구간 (Day 1~7)
-    stop_loss    : float = -0.08   # 손절 기준 수익률
-    take_profit  : float =  0.25   # 익절 기준 수익률
+    window       : int   = 60      # 전체 보유 윈도우 (거래일)
+    observe_days : int   = 22       # 관찰 구간 (Day 1~7)
+    stop_loss    : float = -0.12   # 손절 기준 수익률
+    take_profit  : float =  0.20   # 익절 기준 수익률
 
     @property
     def select_start(self) -> int:
@@ -80,25 +90,26 @@ class OptimalStopper:
         self.cfg          = config or StoppingConfig()
 
         # 진입일 이후 최대 window 거래일 슬라이스
+        '''
         future = prices.loc[entry_date:]
         self.window_prices = future.iloc[: self.cfg.window]
+        '''
+        self.window_prices = prices.loc[entry_date:]
 
     def _return(self, price: float) -> float:
         return (price - self.entry_price) / self.entry_price
 
     def run(self) -> TradeResult:
-        cfg    = self.cfg
-        wp     = self.window_prices
+        cfg = self.cfg
+        wp  = self.window_prices
 
         if len(wp) == 0:
             raise ValueError(f"진입일({self.entry_date}) 이후 가격 데이터 없음")
 
-        # 관찰 구간 : Day 1 ~ observe_days 
+        # 관찰 구간 : Day 1 ~ observe_days
         observe = wp.iloc[: cfg.observe_days]
-        select  = wp.iloc[cfg.observe_days :]      # Day (observe+1) ~ 20
 
-        # 관찰 구간 최고가 P*
-        # (관찰 구간보다 데이터가 짧으면 있는 것만 사용)
+        # 관찰 구간 최고가 P* 확정
         p_star = observe.max() if len(observe) > 0 else self.entry_price
 
         # 관찰 구간 내 Stop-loss / Take-profit 체크
@@ -109,25 +120,31 @@ class OptimalStopper:
             if ret >= cfg.take_profit:
                 return self._make_result(date, price, "take_profit", day_idx, p_star)
 
-        # 선택 구간 : Day (observe+1) ~ window 
+        # 선택 구간 : Day (observe+1) ~ 끝까지
+        select = wp.iloc[cfg.observe_days :]
+
         for day_idx, (date, price) in enumerate(select.items(),
                                                 start=cfg.observe_days + 1):
             ret = self._return(price)
 
-            # 오버라이드 우선 체크
+            # stop_loss / take_profit 우선 체크
             if ret <= cfg.stop_loss:
                 return self._make_result(date, price, "stop_loss", day_idx, p_star)
             if ret >= cfg.take_profit:
                 return self._make_result(date, price, "take_profit", day_idx, p_star)
 
-            # Secretary 조건: 현재가 > P*
-            if price > p_star:
+            # 텀 계산 (60일마다 기준 5% 감소)
+            days_in_select = day_idx - cfg.observe_days - 1
+            term           = days_in_select // cfg.window
+            multiplier     = max(1.00, 1.15 - term * 0.05)
+
+            if price > p_star * multiplier:
                 return self._make_result(date, price, "secretary_trigger", day_idx, p_star)
 
-        # Day 20 강제 청산
+        # 데이터 끝까지 미청산 → 마지막 가격으로 청산
         last_date  = wp.index[-1]
         last_price = wp.iloc[-1]
-        return self._make_result(last_date, last_price, "force_liquidate", len(wp), p_star)
+        return self._make_result(last_date, last_price, "secretary_trigger", len(wp), p_star)
 
     def _make_result(
         self,
@@ -243,6 +260,7 @@ def save_trade_results(summary_df: pd.DataFrame, output_dir: str = "data"):
 
 
 if __name__ == "__main__":
+    from data_pipeline    import run_pipeline
     from greedy_strategy  import PortfolioGreedySelector
     from optimal_stopping import PortfolioStopper, trade_statistics
 
@@ -259,7 +277,8 @@ if __name__ == "__main__":
 
     ps     = PortfolioStopper(price_store, entry_signals)
     trades = ps.run()
-    print(trade_statistics(ps.summary(trades)))
+    stats  = trade_statistics(ps.summary(trades)) 
+    print(stats)
     for key, value in stats.items():
         print(f"  {key}: {value}")
     

@@ -19,4 +19,4 @@ Sharpe Ratio -0.3978 — 위험 대비 수익이 마이너스. 그냥 은행에 
 secretary_trigger 111건 — P*(관찰 구간 최고가)를 넘는 순간 매도. "이 정도면 충분히 올랐다" 판단. 가장 많이 발생
 stop_loss 65건 — 수익률 -8% 찍으면 강제 손절. 손실 제한용인데 65번이나 터진 게 문제
 force_liquidate 40건 — 20일 다 됐는데 secretary_trigger도 stop_loss도 안 걸려서 그냥 강제 청산. 애매한 상태로 끝난 거래들
-take_profit 1건 — +25% 익절 조건인데 딱 1번만 터짐. secretary_trigger가 훨씬 먼저 팔아버려서 큰 수익을 못 먹는 구조Want to be notified when Claude
+take_profit 1건 — +25% 익절 조건인데 딱 1번만 터짐. secretary_trigger가 훨씬 먼저 팔아버려서 큰 수익을 못 먹는 구조
