@@ -66,3 +66,19 @@ P*×1.15 못 넘고 기준이 낮아지면서 팔린 경우인데, 이 중 수�
 - 문제: 상승 중에도 20일 되면 강제 청산 (전체의 18%)
 - 변경: stop_loss / take_profit / secretary 조건 걸릴 때까지 보유
 
+3. optimal_stopping/GA 수정
+
+optimal_stopping.py
+
+ObserveMode, DynamicObserveCalculator, UCB1ObserveSelector 클래스 추가
+StoppingConfig에 observe_mode 파라미터 추가 (기본값 "fixed")
+window=60, observe=22, stop=-12%, take=+20%
+force_liquidate 제거
+secretary 기준 P*×1.15 → 60일 텀마다 5%씩 완화
+main 블록 import 버그 수정
+
+backtester.py
+
+argparse 추가 (--observe-mode, --start, --end, --capital)
+Rolling GA:6개월마다 자동으로 재학습
+data/ga_rolling/ 폴더에 weight저장

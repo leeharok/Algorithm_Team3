@@ -107,7 +107,7 @@ class Backtester:
 
         # GA 가중치 → 투입 자본
         weight       = self.ga_weights.get(ticker, 0)
-        alloc_capital= self._portfolio_value(date) * weight
+        alloc_capital= self.cfg.initial_capital * weight
         alloc_capital= min(alloc_capital, self.cash * 0.95)   # 현금 5% 여유
 
         if alloc_capital < price:   # 1주도 못 사면 패스
@@ -203,13 +203,61 @@ class Backtester:
         prev_value = cfg.initial_capital
 
         # Greedy 선택기 초기화
-        pg      = PortfolioGreedySelector(self.store, cfg.greedy)
+        pg        = PortfolioGreedySelector(self.store, cfg.greedy)
         g_results = pg.run()   # {ticker: df with strategy, entry cols}
 
         # 이미 포지션이 있는 종목 추적 (중복 진입 방지)
         in_position = set()
 
-        for date in trading_dates:
+        # ── Rolling GA 설정 ──────────────────────────────────────
+        # 6개월(126 거래일)마다 직전 2년(504 거래일) 데이터로 GA 재학습
+        ROLLING_INTERVAL = 126   # 재학습 주기 (거래일, 약 6개월)
+        ROLLING_WINDOW   = 504   # 학습 데이터 길이 (거래일, 약 2년)
+        last_retrain_idx = -ROLLING_INTERVAL  # 처음엔 즉시 학습
+
+        def retrain_ga(current_date: pd.Timestamp) -> dict:
+            """current_date 기준 직전 ROLLING_WINDOW일로 GA 재학습 → 가중치 반환"""
+            # 전체 store에서 current_date 이전 데이터만 사용
+            ret_frames = {}
+            for t, df in self.store.items():
+                hist = df.loc[:current_date]["Return"].dropna()
+                hist = hist.iloc[-ROLLING_WINDOW:]   # 최근 2년만
+                if len(hist) > 60:
+                    ret_frames[t] = hist
+            if not ret_frames:
+                return self.ga_weights   # 데이터 없으면 기존 유지
+
+            ret_df = pd.DataFrame(ret_frames).dropna()
+            if len(ret_df) < 60:
+                return self.ga_weights
+
+            ga     = GeneticAlgorithm(ret_df, list(ret_df.columns),
+                                      cfg.ga, verbose=False)
+            result = ga.run()
+            if self.verbose:
+                print(f"    ↻ GA 재학습 ({current_date.date()}) "
+                      f"| Sharpe: {result['best_sharpe']:.4f} "
+                      f"| 학습기간: {len(ret_df)}일")
+
+            # ── Rolling GA 재학습 기록 저장 ──────────────────────
+            os.makedirs("data/ga_rolling", exist_ok=True)
+            w_df = pd.DataFrame([result["best_weights"]])
+            w_df["retraining_date"] = str(current_date.date())
+            w_df["sharpe"]         = round(result["best_sharpe"], 4)
+            w_df["train_days"]     = len(ret_df)
+            fname = f"data/ga_rolling/ga_weights_{current_date.date()}.csv"
+            w_df.to_csv(fname, index=False)
+            # ─────────────────────────────────────────────────────
+
+            return result["best_weights"]
+        # ────────────────────────────────────────────────────────
+
+        for date_idx, date in enumerate(trading_dates):
+            # ── Rolling GA: 6개월마다 재학습 ─────────────────────
+            if date_idx - last_retrain_idx >= ROLLING_INTERVAL:
+                self.ga_weights  = retrain_ga(date)
+                last_retrain_idx = date_idx
+            # ────────────────────────────────────────────────────
             self._check_and_close(date)
             in_position = {p.ticker for p in self.positions}
 
@@ -391,24 +439,64 @@ def save_backtest(result: dict, label: str = "full", output_dir: str = "data"):
     print(f"  ✓ 결과 저장 → {output_dir}/bt_{label}_*.csv")
 
 if __name__ == "__main__":
+    import argparse
     from data_pipeline import run_pipeline
     from backtester import Backtester, BacktestConfig, print_report, save_backtest
+    from optimal_stopping import StoppingConfig
     import pandas as pd
+
+    # ✅ argparse: 실행 옵션 설정
+    parser = argparse.ArgumentParser(description="백테스팅 실행")
+    parser.add_argument(
+        "--observe-mode",
+        type=str,
+        default="fixed",
+        choices=["fixed", "dynamic", "ucb1"],
+        help="관찰 기간 모드 선택 (기본: fixed)"
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default="2023-01-02",
+        help="백테스팅 시작일 (기본: 2023-01-02)"
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default="2025-06-27",
+        help="백테스팅 종료일 (기본: 2025-06-27)"
+    )
+    parser.add_argument(
+        "--capital",
+        type=int,
+        default=100_000_000,
+        help="초기 자본금 (기본: 1억)"
+    )
+    args = parser.parse_args()
+
+    print(f"  observe_mode : {args.observe_mode}")
+    print(f"  기간         : {args.start} ~ {args.end}")
+    print(f"  초기자본     : {args.capital:,}원")
+    print("=" * 60)
 
     store, splits = run_pipeline()
 
-    # 2단계에서 만든 GA 가중치 로드
+    # GA 가중치 로드
     w_df = pd.read_csv("data/ga_best_weights.csv")
     ga_weights = {
         col.replace("_KS", ".KS"): float(w_df[col].iloc[0])
         for col in w_df.columns if col != "cash_reserve"
     }
 
-    cfg = BacktestConfig(initial_capital=100_000_000)
-    bt  = Backtester(store, ga_weights, cfg, verbose=True)
-    '''version 1.0
-    result = bt.run("2018-01-02", "2025-06-30")
-    '''
-    result = bt.run("2023-01-02", "2025-06-30")   # GA test 이후 구간만
+    # ✅ observe_mode 옵션 적용
+    stop_cfg = StoppingConfig(observe_mode=args.observe_mode)
+    cfg      = BacktestConfig(
+        initial_capital = args.capital,
+        stop            = stop_cfg,
+    )
+
+    bt     = Backtester(store, ga_weights, cfg, verbose=True)
+    result = bt.run(args.start, args.end)
+
     print_report(result)
-    save_backtest(result, "full")
+    save_backtest(result, f"full_{args.observe_mode}")
