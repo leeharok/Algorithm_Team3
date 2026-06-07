@@ -43,20 +43,31 @@ class DynamicObserveCalculator:
         self.min_days = min_days   # 최소 관찰 기간 (급변장)
         self.max_days = max_days   # 최대 관찰 기간 (안정장)
 
-    def calc(self, prices: pd.Series, entry_date: pd.Timestamp) -> int:
+    def calc(self, prices: pd.Series, entry_date: pd.Timestamp, indicator_row=None) -> int:
         """
         진입일 기준 과거 60일 데이터로 변동성/추세 계산
         → 관찰 기간(일수) 반환
         """
-        hist = prices.loc[:entry_date].iloc[-60:]
-        if len(hist) < 20:
-            return 22   # 데이터 부족 시 기본값
 
-        returns = hist.pct_change().dropna()
-        vol20   = returns.iloc[-20:].std()
-        vol60   = returns.std()
-        ma20    = hist.iloc[-20:].mean()
-        ma60    = hist.mean()
+        if indicator_row is not None:
+            vol20 = indicator_row["Vol20"]
+            vol60 = indicator_row["Vol60"]
+            ma20 = indicator_row["MA20"]
+            ma60 = indicator_row["MA60"]
+        
+        else:
+            hist = prices.loc[:entry_date].iloc[-60:]
+            if len(hist) < 20:
+                return 22   # 데이터 부족 시 기본값
+
+            returns = hist.pct_change().dropna()
+            vol20   = returns.iloc[-20:].std()
+            vol60   = returns.std()
+            ma20    = hist.iloc[-20:].mean()
+            ma60    = hist.mean()
+
+        if pd.isna(vol20) or pd.isna(vol60) or pd.isna(ma20) or pd.isna(ma60):
+            return 22
 
         # 변동성 점수: Vol20이 Vol60보다 클수록 불안정 (0~1)
         vol_ratio   = vol20 / (vol60 + 1e-9)
@@ -155,6 +166,7 @@ class OptimalStopper:
         entry_price : float,
         ticker      : str = "UNKNOWN",
         config      : StoppingConfig = None,
+        indicator_row : pd.Series = None,
     ):
         self.prices       = prices
         self.entry_date   = entry_date
@@ -171,7 +183,7 @@ class OptimalStopper:
             self._observe_days = self.cfg.observe_days
         elif mode == "dynamic":
             calc = DynamicObserveCalculator(min_days=7, max_days=30)
-            self._observe_days = calc.calc(prices, entry_date)
+            self._observe_days = calc.calc(prices, entry_date, indicator_row)
         elif mode == "ucb1":
             # UCB1 selector는 PortfolioStopper에서 주입받음 (없으면 fixed)
             self._observe_days = getattr(self, "_ucb1_observe_days", self.cfg.observe_days)
@@ -260,12 +272,14 @@ class OptimalStopper:
 class PortfolioStopper:
     def __init__(
         self,
-        price_store   : dict,          # {ticker: pd.Series(Close)}
+        full_store   : dict,          # {ticker: pd.Series(Close)}
         entry_signals : dict,          # {ticker: pd.DatetimeIndex} 진입일 목록
+        indicator_store : dict = None,
         config        : StoppingConfig = None,
     ):
         self.price_store   = price_store
         self.entry_signals = entry_signals
+        self.indicator_store = indicator_store or {}
         self.cfg           = config or StoppingConfig()
         # ✅ 추가: UCB1 모드일 때 전역 selector 공유
         self._ucb1 = UCB1ObserveSelector() if self.cfg.observe_mode == "ucb1" else None
@@ -274,14 +288,16 @@ class PortfolioStopper:
         all_trades = []
         for ticker, entry_dates in self.entry_signals.items():
             prices = self.price_store.get(ticker)
-            if prices is None:
-                print(f"  ✗ {ticker}: 가격 데이터 없음")
+            ind_df = self.indicator_store.get(ticker)
+            if prices is None or ind_df is None:
+                print(f"  ✗ {ticker}: 가격 또는 지표 데이터 없음")
                 continue
             for entry_date in entry_dates:
                 try:
                     entry_price = prices.loc[entry_date]
+                    indicator_row = ind_df.loc[entry_date]
                     stopper     = OptimalStopper(
-                        prices, entry_date, entry_price, ticker, self.cfg
+                        prices, entry_date, entry_price, ticker, self.cfg, indicator_row
                     )
                     # ✅ 추가: UCB1 모드면 selector에서 관찰 기간 주입
                     if self._ucb1 is not None:
@@ -362,7 +378,7 @@ def save_trade_results(summary_df: pd.DataFrame, output_dir: str = "data"):
 
 if __name__ == "__main__":
     from data_pipeline    import run_pipeline
-    from greedy_strategy  import PortfolioGreedySelector
+    from greedy_strategy_SlidingWindow  import PortfolioGreedySelector
 
     store, _  = run_pipeline()
     pg        = PortfolioGreedySelector(store)
@@ -371,7 +387,7 @@ if __name__ == "__main__":
     price_store   = {t: df["Close"] for t, df in store.items()}
     entry_signals = {t: df[df["entry"] == True].index for t, df in results.items()}
 
-    ps     = PortfolioStopper(price_store, entry_signals)
+    ps     = PortfolioStopper(price_store, entry_signals, store)
     trades = ps.run()
     stats  = trade_statistics(ps.summary(trades))
     for key, value in stats.items():
