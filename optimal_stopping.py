@@ -221,9 +221,17 @@ class OptimalStopper:
         #   3텀 (Day 143~202): P* × 1.05
         #   4텀 (Day 203~  ) : P* × 1.00  (이후 고정)
         select = wp.iloc[self._observe_days :]
+        n_select = len(select)
+        thresholds = None
+        if n_select>0:
+            indices = np.arange(n_select)
+            terms = indices//cfg.window
+            multipliers = np.maximum(1.00, 1.15-terms*0.05)
+            thresholds = p_star * multipliers
 
-        for day_idx, (date, price) in enumerate(select.items(),
+        for i, (date, price) in enumerate(select.items(),
                                                 start=self._observe_days + 1):
+            day_idx = self._observe_days + i + 1
             ret = self._return(price)
 
             # stop_loss / take_profit 우선 체크
@@ -231,19 +239,10 @@ class OptimalStopper:
                 return self._make_result(date, price, "stop_loss", day_idx, p_star)
             if ret >= cfg.take_profit:
                 return self._make_result(date, price, "take_profit", day_idx, p_star)
-
-            # 현재 텀 계산 (0-indexed)
-            # day_idx는 observe_days+1부터 시작, window=60 단위로 텀 증가
-            days_in_select = day_idx - self._observe_days - 1  # 선택구간 내 경과일
-            term = days_in_select // cfg.window               # 0, 1, 2, 3, ...
-
-            # Secretary 기준: 1.15에서 텀당 0.05씩 감소, 최소 1.00
-            multiplier = max(1.00, 1.15 - term * 0.05)
-
-            # Secretary 조건: 현재가 > P* × multiplier
-            if price > p_star * multiplier:
+            
+            if thresholds is not None and price > thresholds[i]:
                 return self._make_result(date, price, "secretary_trigger", day_idx, p_star)
-
+            
         # 데이터 끝까지 왔는데 미청산 → 마지막 가격으로 청산
         last_date  = wp.index[-1]
         last_price = wp.iloc[-1]
@@ -318,6 +317,18 @@ class PortfolioStopper:
         """TradeResult 리스트 → 요약 DataFrame"""
         if not trades:
             return pd.DataFrame()
+        
+        return pd.DataFrame({
+            "ticker"        : [t.ticker for t in trades],
+            "entry_date"    : [t.entry_date.date()  for t in trades],
+            "exit_date"     : [t.exit_date.date()   for t in trades],
+            "hold_days"     : [t.hold_days           for t in trades],
+            "entry_price"   : [round(t.entry_price, 0) for t in trades],
+            "exit_price"    : [round(t.exit_price,  0) for t in trades],
+            "p_star"        : [round(t.p_star,       0) for t in trades],
+            "return_pct"    : [round(t.return_pct * 100, 2) for t in trades],
+            "exit_reason"   : [t.exit_reason         for t in trades],
+        })
         rows = []
         for t in trades:
             rows.append({
