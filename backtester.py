@@ -211,7 +211,7 @@ class Backtester:
 
         # ── Rolling GA 설정 ──────────────────────────────────────
         # 6개월(126 거래일)마다 직전 2년(504 거래일) 데이터로 GA 재학습
-        ROLLING_INTERVAL = 126   # 재학습 주기 (거래일, 약 6개월)
+        ROLLING_INTERVAL = 21   # 재학습 주기 (거래일, 약 6개월)
         ROLLING_WINDOW   = 504   # 학습 데이터 길이 (거래일, 약 2년)
         last_retrain_idx = -ROLLING_INTERVAL  # 처음엔 즉시 학습
 
